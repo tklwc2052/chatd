@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <script src="https://cdn.ably.com/lib/ably.min-1.js"></script>
+    <style>
+        /* --- BRINGING BACK THE MIDNIGHT CSS --- */
+        :root {
+            --bg-primary: #000000;
+            --bg-secondary: #0b0b0b;
+            --bg-input: #111214;
+            --color-bubble-self: #005fa3; 
+            --color-bubble-other: #1e1f22; 
+            --color-text: #f0f0f0;   
+            --color-accent-blue: #00ACE6;
+            --color-muted: #949ba4;
+        }
+
+        body { 
+            background-color: var(--bg-primary); 
+            background-size: cover; background-position: center;
+            color: var(--color-text); font-family: 'gg sans', sans-serif; 
+            margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; 
+        }
+
+        /* --- PROFILE BANNER --- */
+        #profile-header {
+            height: 120px; background-size: cover; background-position: center;
+            background-color: var(--color-accent-blue); position: relative;
+            display: none; border-bottom: 2px solid #222;
+        }
+        #avatar-mini {
+            width: 50px; height: 50px; border-radius: 50%; border: 4px solid var(--bg-primary);
+            position: absolute; bottom: -25px; left: 15px; background: #333;
+        }
+
+        #messages { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 12px; margin-top: 25px; }
+
+        /* --- MESSAGE BUBBLES --- */
+        .msg { max-width: 85%; padding: 10px; border-radius: 8px; font-size: 14px; position: relative; }
+        .other { background: var(--color-bubble-other); align-self: flex-start; border-bottom-left-radius: 2px; }
+        .mine { background: var(--color-bubble-self); align-self: flex-end; border-bottom-right-radius: 2px; }
+        
+        .sender { font-size: 11px; font-weight: bold; color: var(--color-accent-blue); margin-bottom: 4px; display: block; cursor: pointer; }
+        .msg img { max-width: 100%; border-radius: 4px; margin-top: 5px; cursor: zoom-in; }
+
+        /* --- INPUT AREA --- */
+        #input-area { background: var(--bg-secondary); padding: 10px; border-top: 1px solid #222; }
+        #msg-box { 
+            width: 100%; background: var(--bg-input); color: white; border: none; 
+            padding: 10px; border-radius: 8px; resize: none; outline: none; box-sizing: border-box;
+        }
+        .controls { display: flex; gap: 10px; margin-top: 5px; align-items: center; font-size: 12px; color: var(--color-muted); }
+        .btn-icon { cursor: pointer; opacity: 0.7; transition: 0.2s; font-size: 18px; }
+        .btn-icon:hover { opacity: 1; }
+
+        /* --- LOGIN / SETTINGS --- */
+        #setup { position: fixed; inset: 0; background: var(--bg-primary); z-index: 1000; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
+        .setup-input { background: #111; border: 1px solid #333; color: white; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="setup">
+        <h2 style="color: var(--color-accent-blue)">C&C Corp Setup</h2>
+        <label>Username</label>
+        <input type="text" id="u-name" class="setup-input" placeholder="Username">
+        <label>Profile Banner URL (Imgur/Discord link)</label>
+        <input type="text" id="u-banner" class="setup-input" placeholder="https://...">
+        <label>Custom Background URL</label>
+        <input type="text" id="u-bg" class="setup-input" placeholder="https://...">
+        <button onclick="saveAndJoin()" style="background: var(--color-accent-blue); color: white; border: none; padding: 12px; border-radius: 4px; font-weight: bold; cursor: pointer;">ENTER STEAL_MODE</button>
+    </div>
+
+    <div id="profile-header">
+        <div id="avatar-mini"></div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div id="input-area">
+        <textarea id="msg-box" rows="2" placeholder="Message #main"></textarea>
+        <div class="controls">
+            <span class="btn-icon" onclick="document.getElementById('file-up').click()">🖼️</span>
+            <input type="file" id="file-up" style="display:none" onchange="uploadImg(this)">
+            <span>Shift+Enter for new line</span>
+            <span class="btn-icon" style="margin-left: auto;" onclick="location.reload()">⚙️</span>
+        </div>
+    </div>
+
+    <script>
+        let ably, chan, myData = {};
+
+        // Load your C&C Profile
+        window.onload = () => {
+            const saved = localStorage.getItem('cc_profile');
+            if (saved) {
+                const p = JSON.parse(saved);
+                document.getElementById('u-name').value = p.name || '';
+                document.getElementById('u-banner').value = p.banner || '';
+                document.getElementById('u-bg').value = p.bg || '';
+            }
+        };
+
+        function saveAndJoin() {
+            myData = {
+                name: document.getElementById('u-name').value,
+                banner: document.getElementById('u-banner').value,
+                bg: document.getElementById('u-bg').value
+            };
+            if (!myData.name) return alert("Need a name, Recruit.");
+            localStorage.setItem('cc_profile', JSON.stringify(myData));
+
+            // Set Background
+            if (myData.bg) document.body.style.backgroundImage = `url('${myData.bg}')`;
+            if (myData.banner) {
+                document.getElementById('profile-header').style.display = 'block';
+                document.getElementById('profile-header').style.backgroundImage = `url('${myData.banner}')`;
+            }
+
+            connectAbly();
+        }
+
+        function connectAbly() {
+            ably = new Ably.Realtime({ key: 'H9Hq3g.e7u10Q:EGnfhQ3As75IHb3d-C667jZzlYtitwd29fIeJCxmRgw', transports: ['xhr_polling'] });
+            chan = ably.channels.get('main-room', { params: { rewind: '30' } });
+
+            document.getElementById('setup').style.display = 'none';
+            chan.subscribe('msg', (m) => render(m.data));
+        }
+
+        function render(data) {
+            const isMe = data.user === myData.name;
+            const div = document.createElement('div');
+            div.className = `msg ${isMe ? 'mine' : 'other'}`;
+            
+            let html = `<span class="sender">${data.user}</span>`;
+            if (data.text) html += `<div>${data.text}</div>`;
+            if (data.img) html += `<img src="${data.img}">`;
+            
+            div.innerHTML = html;
+            document.getElementById('messages').appendChild(div);
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+        }
+
+        // Handle Image Sending (Base64)
+        function uploadImg(input) {
+            const file = input.files[0];
+            if (file.size > 50000) return alert("File too big for school wifi. Keep under 50kb!");
+            const reader = new FileReader();
+            reader.onload = (e) => chan.publish('msg', { user: myData.name, img: e.target.result });
+            reader.readAsDataURL(file);
+        }
+
+        document.getElementById('msg-box').onkeydown = (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const text = e.target.value.trim();
+                if (text) {
+                    chan.publish('msg', { user: myData.name, text: text });
+                    e.target.value = '';
+                }
+            }
+        };
+    </script>
+</body>
+</html>
